@@ -2,10 +2,41 @@ import dash
 from dash import dcc, html, Input, Output
 import pandas as pd
 import plotly.express as px
+import pgeocode
+
+# for debug purpose
+import logging
+logging.basicConfig(level=logging.INFO)
 
 # Load the processed dataset
 path = 'data/processed/processed_vehicles_task02_final.csv'
 df = pd.read_csv(path)
+
+# Ensure ZIP Code is treated as a string
+df['ZIP Code'] = df['ZIP Code'].astype(str).str.split('.').str[0]  # Remove decimal part if any
+
+# Replace 'unknown' or invalid ZIP codes with None
+df['ZIP Code'] = df['ZIP Code'].replace(['unknown', 'nan', 'None', '0'], None)
+
+# Log unique ZIP codes for debugging
+logging.info(f"Unique ZIP Codes: {df['ZIP Code'].unique()}")
+
+# Add latitude and longitude based on ZIP Code if not already present
+if 'Latitude' not in df.columns or 'Longitude' not in df.columns:
+    logging.info("Adding Latitude and Longitude based on ZIP Code. Wait...")
+    nomi = pgeocode.Nominatim('us')  # Use 'us' for United States ZIP Codes
+
+    # Apply geocoding
+    df['Latitude'] = df['ZIP Code'].apply(lambda x: nomi.query_postal_code(x).latitude if pd.notna(x) else None)
+    df['Longitude'] = df['ZIP Code'].apply(lambda x: nomi.query_postal_code(x).longitude if pd.notna(x) else None)
+
+    # Log the first few rows of latitude and longitude for debugging
+    logging.info(f"Sample Latitude and Longitude: {df[['ZIP Code', 'Latitude', 'Longitude']].head()}")
+
+# Drop rows with missing latitude or longitude
+logging.info(f"DataFrame shape before dropping missing lat/lon: {df.shape}")
+df = df.dropna(subset=['Latitude', 'Longitude'])
+logging.info(f"DataFrame shape after dropping missing lat/lon: {df.shape}")
 
 # Initialize the Dash app
 app = dash.Dash(__name__)
@@ -15,7 +46,7 @@ app.title = "Vehicle Dashboard"
 app.layout = html.Div([
     html.H1("Vehicle Dashboard", style={'textAlign': 'center'}),
 
-    # Filters in one row
+    # Filters at the top
     html.Div([
         html.Div([
             html.Label("Filter by Vehicle Make:"),
@@ -26,7 +57,7 @@ app.layout = html.Div([
                 placeholder="Select a vehicle make",
                 multi=True
             )
-        ], style={'width': '30%', 'display': 'inline-block', 'padding': '10px'}),
+        ], style={'width': '23%', 'display': 'inline-block', 'padding': '10px'}),
 
         html.Div([
             html.Label("Filter by Vehicle Type:"),
@@ -37,7 +68,7 @@ app.layout = html.Div([
                 placeholder="Select a vehicle type",
                 multi=True
             )
-        ], style={'width': '30%', 'display': 'inline-block', 'padding': '10px'}),
+        ], style={'width': '23%', 'display': 'inline-block', 'padding': '10px'}),
 
         html.Div([
             html.Label("Filter by Vehicle Fuel Source:"),
@@ -48,7 +79,7 @@ app.layout = html.Div([
                 placeholder="Select a fuel source",
                 multi=True
             )
-        ], style={'width': '30%', 'display': 'inline-block', 'padding': '10px'}),
+        ], style={'width': '23%', 'display': 'inline-block', 'padding': '10px'}),
 
         html.Div([
             html.Label("Filter by City:"),
@@ -59,41 +90,32 @@ app.layout = html.Div([
                 placeholder="Select a city",
                 multi=True
             )
-        ], style={'width': '30%', 'display': 'inline-block', 'padding': '10px'})
+        ], style={'width': '23%', 'display': 'inline-block', 'padding': '10px'})
     ], style={'display': 'flex', 'justify-content': 'space-between'}),
 
-
-    html.Div([
-        # Vehicle Type distribution chart
-        html.Div([
+    # Tabs for charts
+    dcc.Tabs([
+        dcc.Tab(label='Vehicle Type Distribution', children=[
             dcc.Graph(id='vehicle-type-chart')
-        ], style={'width': '50%', 'display': 'inline-block'}),
-
-        # Fuel Source distribution chart
-        html.Div([
+        ]),
+        dcc.Tab(label='Fuel Source Distribution', children=[
             dcc.Graph(id='fuel-source-chart')
-        ], style={'width': '50%', 'display': 'inline-block'})
-    ], style={'display': 'flex', 'justify-content': 'space-between'}),
-    
-    # Fule source requirements chart
-    html.Div([
-        dcc.Graph(id='fuel-req-chart')
-    ]),
-
-    # Two pie charts in one row
-    html.Div([
-        html.Div([
+        ]),
+        dcc.Tab(label='Fuel Source Requirements', children=[
+            dcc.Graph(id='fuel-req-chart')
+        ]),
+        dcc.Tab(label='Wheelchair Accessibility', children=[
             dcc.Graph(id='wheelchair-accessibility-chart')
-        ], style={'width': '40%', 'display': 'inline-block'}),
-
-        html.Div([
+        ]),
+        dcc.Tab(label='Vehicle Make Distribution', children=[
             dcc.Graph(id='vehicle-make-pie-chart')
-        ], style={'width': '60%', 'display': 'inline-block'})
-    ], style={'display': 'flex', 'justify-content': 'space-between'}),
-
-    # Line chart for Vehicle Model Year
-    html.Div([
-        dcc.Graph(id='model-year-line-chart')
+        ]),
+        dcc.Tab(label='Vehicle Count by Model Year', children=[
+            dcc.Graph(id='model-year-line-chart')
+        ]),
+        dcc.Tab(label='Geographical Distribution', children=[
+            dcc.Graph(id='geo-distribution-chart')  # Add the map here
+        ])
     ])
 ])
 
@@ -104,13 +126,20 @@ app.layout = html.Div([
      Output('wheelchair-accessibility-chart', 'figure'),
      Output('vehicle-make-pie-chart', 'figure'),
      Output('model-year-line-chart', 'figure'),
-     Output('fuel-req-chart', 'figure')],
+     Output('fuel-req-chart', 'figure'),
+     Output('geo-distribution-chart', 'figure')],  # Add new output for the map
     [Input('make-filter', 'value'),
      Input('type-filter', 'value'),
      Input('fuel-source-filter', 'value'),
      Input('city-filter', 'value')]
 )
-def update_charts(selected_makes, selected_types,selected_fuel_sources, selected_cities, ):
+def update_charts(selected_makes, selected_types, selected_fuel_sources, selected_cities):
+    # DEBUG: Log the selected filters
+    logging.info(f"Selected Makes: {selected_makes}")
+    logging.info(f"Selected Types: {selected_types}")
+    logging.info(f"Selected Fuel Sources: {selected_fuel_sources}")
+    logging.info(f"Selected Cities: {selected_cities}")
+    
     # Filter data based on selected filters
     filtered_df = df
     if selected_makes:
@@ -121,8 +150,12 @@ def update_charts(selected_makes, selected_types,selected_fuel_sources, selected
         filtered_df = filtered_df[filtered_df['Vehicle Fuel Source'].isin(selected_fuel_sources)]
     if selected_cities:
         filtered_df = filtered_df[filtered_df['City'].isin(selected_cities)]
-    
 
+    logging.info(f"Filtered DataFrame shape: {filtered_df.shape}")
+    
+    assert 'Latitude' in filtered_df.columns, "Latitude column is missing in the filtered DataFrame"
+    assert 'Longitude' in filtered_df.columns, "Longitude column is missing in the filtered DataFrame"
+    
     # Vehicle Type distribution chart
     vehicle_type_fig = px.histogram(
         filtered_df, x='Vehicle Type', color='Vehicle Type',
@@ -138,11 +171,11 @@ def update_charts(selected_makes, selected_types,selected_fuel_sources, selected
     )
 
     # Wheelchair Accessibility chart
+    filtered_df['Wheelchair Accessible Label'] = filtered_df['Wheelchair Accessible'].map({'Y': 'Yes', 'N': 'No'})
     wheelchair_fig = px.pie(
-        filtered_df, names='Wheelchair Accessible', title="Wheelchair Accessibility",
-        color='Wheelchair Accessible',
-        color_discrete_map={'Y': 'green', 'N': 'red'},
-        labels={'Y': 'Yes', 'N': 'No'}
+        filtered_df, names='Wheelchair Accessible Label', title="Wheelchair Accessibility",
+        color='Wheelchair Accessible Label',
+        color_discrete_map={'Yes': 'green', 'No': 'red'}
     )
 
     # Group less frequent vehicle makes into "Other"
@@ -165,76 +198,37 @@ def update_charts(selected_makes, selected_types,selected_fuel_sources, selected
         title="Vehicle Count by Model Year",
         labels={'Vehicle Model Year': 'Model Year', 'Count': 'Vehicle Count'}
     )
-    
-    # Animated Bar chart for vehicle fule source requirements
+
+    # Animated Bar chart for vehicle fuel source requirements
     fuel_req_fig = px.bar(
-        data_frame=filtered_df.groupby(['Vehicle Fuel Source','Status','Vehicle Model Year'])
-        .size().reset_index(name='Count').sort_values(by='Vehicle Model Year'),
-        x='Vehicle Fuel Source', 
+        data_frame=filtered_df.groupby(['Vehicle Fuel Source', 'Status', 'Vehicle Model Year'])
+                              .size()
+                              .reset_index(name='Count')
+                              .sort_values(by='Vehicle Model Year'),
+        x='Vehicle Fuel Source',
         y='Count',
         color='Status',
         animation_frame='Vehicle Model Year',
         animation_group='Vehicle Fuel Source',
-        # range_y=(0, 500),
         title="Vehicle Fuel Source Requirements",
         labels={'Vehicle Fuel Source': 'Fuel Source', 'Count': 'Count', 'Status': 'Status'}
     )
-    
-    # Customize animation settings for replay and slow motion
-    fuel_req_fig.update_layout(
-        updatemenus=[
-            {
-                "buttons": [
-                    {
-                        "args": [None, {"frame": {"duration": 1500, "redraw": True}, "fromcurrent": True}],
-                        "label": "Play",
-                        "method": "animate"
-                    },
-                    {
-                        "args": [[None], {"frame": {"duration": 0, "redraw": True}, "mode": "immediate", "transition": {"duration": 0}}],
-                        "label": "Pause",
-                        "method": "animate"
-                    }
-                ],
-                "direction": "left",
-                "pad": {"r": 10, "t": 87},
-                "showactive": True,
-                "type": "buttons",
-                "x": 0.1,
-                "xanchor": "right",
-                "y": 0,
-                "yanchor": "top"
-            }
-        ],
-        sliders=[
-            {
-                "steps": [
-                    {
-                        "args": [[frame["name"]], {"frame": {"duration": 1000, "redraw": True}, "mode": "immediate", "transition": {"duration": 300}}],
-                        "label": str(frame["name"]),
-                        "method": "animate",
-                    }
-                    for frame in fuel_req_fig.frames
-                ],
-                "active": 0,
-                "yanchor": "top",
-                "xanchor": "left",
-                "currentvalue": {
-                    "font": {"size": 20},
-                    "prefix": "Year:",
-                    "visible": True,
-                    "xanchor": "right"
-                },
-                "transition": {"duration": 300},
-                "pad": {"b": 10, "t": 50},
-                "len": 0.9,
-                "x": 0.1,
-                "y": 0,
-            }
-        ]
+
+    # Geographical distribution chart
+    geo_distribution_fig = px.scatter_mapbox(
+        filtered_df,
+        lat='Latitude',
+        lon='Longitude',
+        color='Vehicle Type',
+        size='Vehicle Model Year',  # Optional: Adjust size based on a column
+        hover_name='Vehicle Make',
+        hover_data=['City', 'State'],
+        title="Geographical Distribution of Vehicles",
+        mapbox_style="carto-positron",
+        zoom=6
     )
 
-    return vehicle_type_fig, fuel_source_fig, wheelchair_fig, vehicle_make_pie_fig, model_year_fig, fuel_req_fig
+    return vehicle_type_fig, fuel_source_fig, wheelchair_fig, vehicle_make_pie_fig, model_year_fig, fuel_req_fig, geo_distribution_fig
 
 # Run the app
 if __name__ == '__main__':
